@@ -7,6 +7,7 @@ toolchain go1.23.2
 require (
 	github.com/containernetworking/cni v1.2.3
 	github.com/containernetworking/plugins v1.6.0
+	github.com/sirupsen/logrus v1.9.3
 )
 
 require (

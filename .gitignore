@@ -1,2 +1,5 @@
 plugins
 bin
+felix
+calico
+*.tgz
