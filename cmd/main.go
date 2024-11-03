@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -42,7 +44,11 @@ func main() {
 
 }
 
+// Update cmdAdd with better error handling
 func cmdAdd(args *skel.CmdArgs) error {
+	// Add debug logging
+	fmt.Fprintf(os.Stderr, "Debug: Starting ADD for container %s\n", args.ContainerID)
+
 	// Parse network configuration
 	conf := &NetConf{}
 	if err := json.Unmarshal(args.StdinData, conf); err != nil {
@@ -50,7 +56,9 @@ func cmdAdd(args *skel.CmdArgs) error {
 	}
 
 	// Generate interface names
-	hostVethName := generateVethName(args.ContainerID)
+	hostVethName := generateVethName(args.ContainerID, args.IfName)
+	fmt.Fprintf(os.Stderr, "Debug: args.ContainerID = %s\n", args.ContainerID)
+	fmt.Fprintf(os.Stderr, "Debug: hostVethName = %s\n", hostVethName)
 	contVethName := args.IfName
 
 	// Check if veth already exists and clean up if needed
@@ -69,9 +77,18 @@ func cmdAdd(args *skel.CmdArgs) error {
 		PeerName: contVethName,
 	}
 
+	// Add more verbose error handling for veth creation
 	if err := netlink.LinkAdd(veth); err != nil {
+		fmt.Fprintf(os.Stderr, "Debug: Failed to create veth pair: %v\n", err)
+		// Try cleanup before returning error
+		if link, err := netlink.LinkByName(hostVethName); err == nil {
+			netlink.LinkDel(link)
+		}
 		return fmt.Errorf("failed to create veth pair: %v", err)
 	}
+
+	fmt.Fprintf(os.Stderr, "Debug: Successfully created veth pair %s <-> %s\n",
+		hostVethName, contVethName)
 
 	// Get host veth interface
 	hostVeth, err := netlink.LinkByName(hostVethName)
@@ -99,28 +116,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 	return types.PrintResult(result, conf.CNIVersion)
 }
 
-// Helper functions
-func validateNetConf(conf *NetConf) error {
-	if conf.MTU == 0 {
-		conf.MTU = 1500
-	}
-
-	if conf.IPAM.Type == "" {
-		return fmt.Errorf("IPAM config missing")
-	}
-	return nil
-}
-
-func generateVethName(containerID string) string {
-	// Return a name like "caliXXXXXXX" where XXXXXXX is derived from container ID
-	return fmt.Sprintf("cali%s", containerID[:min(11, len(containerID))])
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
+// Update generateVethName to include namespace
+func generateVethName(containerID string, ifName string) string {
+	h := sha1.New()
+	// Add random component to avoid collisions
+	h.Write([]byte(fmt.Sprintf("%s-%s-%d", containerID, ifName, os.Getpid())))
+	sha := hex.EncodeToString(h.Sum(nil))
+	return fmt.Sprintf("veth%s", sha[:11])
 }
 
 // cmdCheck is called by the runtime to check the status of a container's network
@@ -135,29 +137,4 @@ func cmdDel(args *skel.CmdArgs) error {
 	// For this demo, just log and return success
 	log.Println("Demo CNI Plugin: DEL called (no-op)")
 	return nil
-}
-
-// loadConf loads the network configuration from the provided data
-func loadConf(bytes []byte) (*PluginConf, error) {
-	n := &PluginConf{}
-	if err := json.Unmarshal(bytes, n); err != nil {
-		return nil, fmt.Errorf("failed to parse network configuration: %w", err)
-	}
-	return n, nil
-}
-
-// printResult prints a dummy result for this demo plugin
-func printResult(conf *PluginConf, ifName string) error {
-	result := &current.Result{
-		CNIVersion: current.ImplementedSpecVersion,
-		Interfaces: []*current.Interface{
-			{
-				Name: ifName,
-				// Add more interface details if needed
-			},
-		},
-		// Add IP addresses, routes, DNS, etc. as needed
-	}
-
-	return types.PrintResult(result, conf.CNIVersion)
 }
