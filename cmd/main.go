@@ -1,13 +1,13 @@
 package main
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"net"
+	"os"
+	"runtime"
+	"syscall"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
@@ -19,15 +19,187 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// PluginConf defines the configuration options for the plugin
-type PluginConf struct {
-	types.NetConf // Embeds standard CNI network configuration
+const (
+	bridgeName = "cni0"
+	mtu        = 1500
+)
+
+func init() {
+	runtime.LockOSThread()
 }
 
-// NetConf defines the network configuration for the plugin
 type NetConf struct {
 	types.NetConf
 	MTU int `json:"mtu"`
+}
+
+func setupBridge() (*netlink.Bridge, error) {
+	br := &netlink.Bridge{
+		LinkAttrs: netlink.LinkAttrs{
+			Name:   bridgeName,
+			MTU:    mtu,
+			TxQLen: -1,
+		},
+	}
+
+	err := netlink.LinkAdd(br)
+	if err != nil && err != syscall.EEXIST {
+		return nil, fmt.Errorf("failed to create bridge: %v", err)
+	}
+
+	l, err := netlink.LinkByName(bridgeName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup bridge: %v", err)
+	}
+
+	br, ok := l.(*netlink.Bridge)
+	if !ok {
+		return nil, fmt.Errorf("%s already exists but is not a bridge", bridgeName)
+	}
+
+	if err := netlink.LinkSetUp(br); err != nil {
+		return nil, fmt.Errorf("failed to set bridge up: %v", err)
+	}
+
+	return br, nil
+}
+
+func cmdAdd(args *skel.CmdArgs) error {
+	conf := &NetConf{}
+	if err := json.Unmarshal(args.StdinData, conf); err != nil {
+		return fmt.Errorf("failed to parse config: %v", err)
+	}
+
+	br, err := setupBridge()
+	if err != nil {
+		return err
+	}
+
+	netns, err := ns.GetNS(args.Netns)
+	if err != nil {
+		return fmt.Errorf("failed to open netns %q: %v", args.Netns, err)
+	}
+	defer netns.Close()
+
+	var hostInterface, containerInterface net.Interface
+	err = netns.Do(func(hostNS ns.NetNS) error {
+		var err error
+		hostInterface, containerInterface, err = ip.SetupVeth(args.IfName, mtu, "", hostNS)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	// Look up host interface in host namespace
+	hostVeth, err := netlink.LinkByName(hostInterface.Name)
+	if err != nil {
+		return fmt.Errorf("failed to lookup host interface: %v", err)
+	}
+
+	// Look up container interface in container namespace
+	var contVeth netlink.Link
+	err = netns.Do(func(_ ns.NetNS) error {
+		var err error
+		contVeth, err = netlink.LinkByName(containerInterface.Name)
+		if err != nil {
+			return fmt.Errorf("failed to lookup container interface: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if err := netlink.LinkSetMaster(hostVeth, br); err != nil {
+		return fmt.Errorf("failed to connect %q to bridge: %v", hostVeth.Attrs().Name, err)
+	}
+
+	r, err := ipam.ExecAdd(conf.IPAM.Type, args.StdinData)
+	if err != nil {
+		return fmt.Errorf("failed to run IPAM: %v", err)
+	}
+
+	result, err := current.NewResultFromResult(r)
+	if err != nil {
+		return fmt.Errorf("failed to parse IPAM result: %v", err)
+	}
+
+	err = netns.Do(func(hostNS ns.NetNS) error {
+		if err := netlink.LinkSetUp(contVeth); err != nil {
+			return fmt.Errorf("failed to set %q up: %v", contVeth.Attrs().Name, err)
+		}
+
+		// Add IP to container interface
+		for _, ipc := range result.IPs {
+			addr := &netlink.Addr{IPNet: &ipc.Address}
+			if err := netlink.AddrAdd(contVeth, addr); err != nil {
+				return fmt.Errorf("failed to add IP addr to %q: %v", contVeth.Attrs().Name, err)
+			}
+		}
+
+		// Add default route
+		gw := result.IPs[0].Gateway
+		if gw != nil {
+			route := &netlink.Route{
+				LinkIndex: contVeth.Attrs().Index,
+				Gw:        gw,
+				Dst:       nil,
+			}
+			if err := netlink.RouteAdd(route); err != nil {
+				return fmt.Errorf("failed to add default route: %v", err)
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	result.Interfaces = []*current.Interface{{
+		Name:    args.IfName,
+		Mac:     contVeth.Attrs().HardwareAddr.String(),
+		Sandbox: netns.Path(),
+	}}
+
+	return types.PrintResult(result, conf.CNIVersion)
+}
+
+func cmdDel(args *skel.CmdArgs) error {
+	conf := &NetConf{}
+	if err := ipam.ExecDel(conf.IPAM.Type, args.StdinData); err != nil {
+		return err
+	}
+
+	if args.Netns == "" {
+		return nil
+	}
+
+	// Remove the interface
+	err := ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
+		if err := ip.DelLinkByName(args.IfName); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func cmdCheck(args *skel.CmdArgs) error {
+	return nil
+}
+
+func init() {
+	// Setup version info
+	version.PluginSupports("0.1.0", "0.2.0", "0.3.0", "0.4.0", "1.0.0")
 }
 
 func main() {
@@ -45,117 +217,4 @@ func main() {
 		"Demo CNI plugin",
 	)
 
-}
-
-func cmdAdd(args *skel.CmdArgs) error {
-	fmt.Fprintf(os.Stderr, "Debug: Starting ADD for container %s\n", args.ContainerID)
-
-	// Parse network configuration
-	conf := &NetConf{}
-	if err := json.Unmarshal(args.StdinData, conf); err != nil {
-		return fmt.Errorf("failed to parse config: %v", err)
-	}
-
-	// Get container network namespace
-	containerNS, err := ns.GetNS(args.Netns)
-	if err != nil {
-		return fmt.Errorf("failed to get container netns: %v", err)
-	}
-	defer containerNS.Close()
-
-	// Create interfaces within container namespace
-	var hostInterface, containerInterface *current.Interface
-	err = containerNS.Do(func(netNS ns.NetNS) error {
-		// Setup veth pair inside container namespace
-		hostVeth, containerVeth, err := ip.SetupVeth(args.IfName, conf.MTU, generateVethName(args.ContainerID, args.IfName), netNS)
-		if err != nil {
-			return fmt.Errorf("failed to setup veth: %v", err)
-		}
-
-		hostInterface = &current.Interface{
-			Name: hostVeth.Name,
-			Mac:  hostVeth.HardwareAddr.String(),
-		}
-		containerInterface = &current.Interface{
-			Name:    containerVeth.Name,
-			Mac:     containerVeth.HardwareAddr.String(),
-			Sandbox: netNS.Path(),
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	fmt.Fprintf(os.Stderr, "Debug: Created veth pair %s <-> %s\n",
-		hostInterface.Name, containerInterface.Name)
-
-	// Call IPAM plugin
-	r, err := ipam.ExecAdd(conf.IPAM.Type, args.StdinData)
-	if err != nil {
-		return fmt.Errorf("IPAM failed: %v", err)
-	}
-
-	// Convert to current version
-	result, err := current.NewResultFromResult(r)
-	if err != nil {
-		return fmt.Errorf("failed to convert result: %v", err)
-	}
-
-	// Configure IP address in container namespace
-	err = containerNS.Do(func(netNS ns.NetNS) error {
-		// Get container interface
-		containerVeth, err := netlink.LinkByName(containerInterface.Name)
-		if err != nil {
-			return fmt.Errorf("failed to lookup %q: %v", containerInterface.Name, err)
-		}
-
-		// Add IP addresses to container interface
-		for _, ipc := range result.IPs {
-			addr := &netlink.Addr{
-				IPNet: &net.IPNet{
-					IP:   ipc.Address.IP,
-					Mask: ipc.Address.Mask,
-				},
-			}
-			if err := netlink.AddrAdd(containerVeth, addr); err != nil {
-				return fmt.Errorf("failed to add IP addr %v to %q: %v", addr, containerInterface.Name, err)
-			}
-			fmt.Fprintf(os.Stderr, "Debug: Added IP %v to %s\n", addr, containerInterface.Name)
-		}
-
-		// Set container interface up
-		if err := netlink.LinkSetUp(containerVeth); err != nil {
-			return fmt.Errorf("failed to set %q up: %v", containerInterface.Name, err)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	return types.PrintResult(result, conf.CNIVersion)
-}
-
-// Update generateVethName to include namespace
-func generateVethName(containerID string, ifName string) string {
-	h := sha1.New()
-	h.Write([]byte(fmt.Sprintf("%s-%s-%d", containerID, ifName, os.Getpid())))
-	sha := hex.EncodeToString(h.Sum(nil))
-	return fmt.Sprintf("veth%s", sha[:11])
-}
-
-// cmdCheck is called by the runtime to check the status of a container's network
-func cmdCheck(args *skel.CmdArgs) error {
-	// For this demo, always return success (no actual checks)
-	log.Println("Demo CNI Plugin: CHECK called (always succeeding)")
-	return nil
-}
-
-// cmdDel is called by the runtime when a container is removed from the network
-func cmdDel(args *skel.CmdArgs) error {
-	// For this demo, just log and return success
-	log.Println("Demo CNI Plugin: DEL called (no-op)")
-	return nil
 }
