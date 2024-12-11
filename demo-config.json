@@ -2,6 +2,11 @@
     "cniVersion": "1.0.0",
     "name": "demo-network",
     "type": "demo-cni-plugin",
+    "bridge": "cni0",
+    "isGateway": true,
+    "ipMasq": true,
+    "hairpinMode": true,
+    "mtu": 1500,
     "ipam": {
         "type": "host-local",
         "subnet": "10.244.0.0/16",
@@ -11,5 +16,9 @@
         "routes": [
             { "dst": "0.0.0.0/0" }
         ]
+    },
+    "dns": {
+        "nameservers": ["8.8.8.8", "8.8.4.4"],
+        "search": ["default.svc.cluster.local", "svc.cluster.local", "cluster.local"]
     }
 }
