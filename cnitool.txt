@@ -1,1 +1,2 @@
 CNI_PATH=./bin /home/ubuntu/go/bin/cnitool add demo-network  /var/run/netns/demo-cni-ns
+sudo ./xdpdump -i cni0 -w - | tshark -r - -n

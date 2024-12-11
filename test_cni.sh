@@ -63,6 +63,8 @@ sudo env CNI_PATH=./bin CNI_CONTAINERID="ns2-$(date +%s)" /home/ubuntu/go/bin/cn
 echo "Debug: Listing all network interfaces after ns2 configuration..."
 ip link show
 
+brctl show
+sleep 2
 # Test connectivity
 echo "Testing connectivity..."
 NS1_IP=$(sudo ip netns exec ns1 ip addr show dev eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)

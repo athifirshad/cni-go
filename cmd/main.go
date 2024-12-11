@@ -171,6 +171,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 func cmdDel(args *skel.CmdArgs) error {
 	conf := &NetConf{}
+	if err := json.Unmarshal(args.StdinData, conf); err != nil {
+		return fmt.Errorf("failed to parse config: %v", err)
+	}
+
 	if err := ipam.ExecDel(conf.IPAM.Type, args.StdinData); err != nil {
 		return err
 	}
@@ -188,6 +192,15 @@ func cmdDel(args *skel.CmdArgs) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	// Remove the veth pair from the host
+	hostVethName := fmt.Sprintf("veth%s", args.ContainerID[:5])
+	hostVeth, err := netlink.LinkByName(hostVethName)
+	if err == nil {
+		if err := netlink.LinkDel(hostVeth); err != nil {
+			return fmt.Errorf("failed to delete host veth %q: %v", hostVethName, err)
+		}
 	}
 
 	return nil
