@@ -1,0 +1,36 @@
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cni-manager
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: cni-manager
+  template:
+    metadata:
+      labels:
+        app: cni-manager
+    spec:
+      serviceAccountName: cni-manager
+      hostNetwork: true
+      containers:
+      - name: manager
+        image: athifirshad/cni-manager:latest
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: bpf-maps
+          mountPath: /sys/fs/bpf
+        - name: cni-socket
+          mountPath: /var/run/cni
+      volumes:
+      - name: bpf-maps
+        hostPath:
+          path: /sys/fs/bpf
+          type: DirectoryOrCreate
+      - name: cni-socket
+        hostPath:
+          path: /var/run/cni
+          type: DirectoryOrCreate

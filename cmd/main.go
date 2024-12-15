@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/athifirshad/go-cni/pkg/dependencies"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	current "github.com/containernetworking/cni/pkg/types/100"
@@ -64,11 +65,45 @@ func setupBridge() (*netlink.Bridge, error) {
 	return br, nil
 }
 
+func lookupContainerPolicy(containerID string) (bool, error) {
+	// Load BPF map
+	bpfMap, err := dependencies.LoadBPFMap("/sys/fs/bpf/container_deps")
+	if err != nil {
+		return false, fmt.Errorf("failed to load BPF map: %v", err)
+	}
+	defer bpfMap.Close()
+
+	var value []byte
+	key := dependencies.Hash(containerID)
+	if err := bpfMap.Lookup(key, &value); err != nil {
+		return false, nil // Default to unrestricted
+	}
+
+	return value[0]&1 != 0, nil // Check restricted flag
+}
+
 func cmdAdd(args *skel.CmdArgs) error {
+	// Add BPF map lookup before network setup
+	restricted, err := lookupContainerPolicy(args.ContainerID)
+	if err != nil {
+		return err
+	}
+
+	if restricted {
+		// Apply network restrictions
+		// ...
+	}
+
 	conf := &NetConf{}
 	if err := json.Unmarshal(args.StdinData, conf); err != nil {
 		return fmt.Errorf("failed to parse config: %v", err)
 	}
+
+	// Get container network details
+	// containerInfo := &dependencies.ContainerNetwork{
+	// 	ContainerID: args.ContainerID,
+	// 	Interface:   args.IfName,
+	// }
 
 	br, err := setupBridge()
 	if err != nil {

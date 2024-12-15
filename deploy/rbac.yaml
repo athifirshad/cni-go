@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cni-manager
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cni-manager
+rules:
+- apiGroups: [""]      # "" indicates the core API group
+  resources: ["pods"]  # Only needs access to pods
+  verbs: ["get", "list", "watch"]  # Minimal required permissions
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cni-manager    # References the ClusterRole above
+subjects:
+- kind: ServiceAccount
+  name: cni-manager    # References the ServiceAccount above
+  namespace: kube-system

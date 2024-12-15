@@ -1,6 +1,0 @@
-{
-    "containerId": "1234567890abcdef", 
-    "netns": "/var/run/netns/test-cni-ns",
-    "ifName": "eth0"
-  }
-  
