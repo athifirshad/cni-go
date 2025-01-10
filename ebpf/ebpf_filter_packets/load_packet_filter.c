@@ -70,25 +70,38 @@ int main(int argc, char **argv) {
 
     // Step 5: Add an example dependency (e.g., IPs of containers or hosts)
    
-    struct dependency_key key = {
+    struct dependency_key key1= {
     .src_ip = htonl(0x0A000001),  // 10.0.0.1
     .dst_ip = htonl(0x0A000002),  // 10.0.0.2
 };
 
+  struct dependency_key key2= {
+    .src_ip = htonl(0x0A000002),  // 10.0.0.2
+    .dst_ip = htonl(0x0A000001),  // 10.0.0.1
+};
+
+
     __u8 value = 1;  // Mark as an active dependency
 
-    if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY) < 0) {
-        perror("Failed to update map");
+    if (bpf_map_update_elem(map_fd, &key1, &value, BPF_ANY) < 0) {
+        perror("Failed to update dependency 1 in map");
         return 1;
     }
 
     printf("Dependency added: 10.0.0.1 -> 10.0.0.2\n");
+    
+    if (bpf_map_update_elem(map_fd, &key2, &value, BPF_ANY) < 0) {
+        perror("Failed to update dependency 2 in map");
+        return 1;
+    }
+
+    printf("Dependency added: 10.0.0.2 -> 10.0.0.1 \n");
 
     // Step 6: Monitor the packet processing indefinitely
     while (1) {
-        // Look up the packet count from the map (just an example)
+        // Look up the packet value from the map (just an example)
         __u8 count = 0;
-        if (bpf_map_lookup_elem(map_fd, &key, &count) == 0) {
+        if (bpf_map_lookup_elem(map_fd, &key1, &count) == 0) {
             printf("Packet count for 10.0.0.1 -> 10.0.0.2: %u\n", count);
         } else {
             printf("Failed to read packet count\n");
