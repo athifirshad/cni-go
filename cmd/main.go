@@ -135,10 +135,26 @@ func AddContainerToMap(ip net.IP, mac net.HardwareAddr, iface string) error {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
+	log.Printf("CNI ADD called for container: %s", args.ContainerID)
+
+	depMap, err := dependencies.NewDependencyMap()
+	if err != nil {
+		return fmt.Errorf("failed to create BPF map: %v", err)
+	}
+	defer depMap.Close()
+
+	// Verify BPF map exists and is accessible
+	if depMap.Map == nil {
+		return fmt.Errorf("BPF map not initialized")
+	}
+
 	// Add BPF map lookup before network setup
 	restricted, err := lookupContainerPolicy(args.ContainerID)
 	if err != nil {
-		return err
+		log.Printf("Policy lookup error for %s: %v", args.ContainerID, err)
+	} else {
+		log.Printf("Container %s policy lookup result: restricted=%v",
+			args.ContainerID, restricted)
 	}
 
 	if restricted {

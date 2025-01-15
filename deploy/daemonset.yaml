@@ -1,4 +1,3 @@
-
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -16,21 +15,31 @@ spec:
       serviceAccountName: cni-manager
       hostNetwork: true
       containers:
-      - name: manager
-        image: athifirshad/cni-manager:latest
-        securityContext:
-          privileged: true
-        volumeMounts:
-        - name: bpf-maps
-          mountPath: /sys/fs/bpf
-        - name: cni-socket
-          mountPath: /var/run/cni
+        - name: manager
+          image: localhost:5000/cni-manager:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN", "SYS_ADMIN"]
+          volumeMounts:
+            - name: bpf-maps
+              mountPath: /sys/fs/bpf
+              mountPropagation: Bidirectional
+            - name: cni-socket
+              mountPath: /var/run/cni
+            - name: cni-bin
+              mountPath: /opt/cni/bin
       volumes:
-      - name: bpf-maps
-        hostPath:
-          path: /sys/fs/bpf
-          type: DirectoryOrCreate
-      - name: cni-socket
-        hostPath:
-          path: /var/run/cni
-          type: DirectoryOrCreate
+        - name: bpf-maps
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate
+        - name: cni-socket
+          hostPath:
+            path: /var/run/cni
+            type: DirectoryOrCreate
+        - name: cni-bin
+          hostPath:
+            path: /opt/cni/bin
+            type: DirectoryOrCreate

@@ -6,7 +6,7 @@
 #include <linux/tcp.h>
 #include <linux/in.h>
 #include <bpf/bpf_helpers.h>
-cd
+
 
 // Define a map to hold allowed source MAC and IP addresses
 struct source_entry {
@@ -14,12 +14,13 @@ struct source_entry {
     unsigned char mac[ETH_ALEN]; // MAC address
 };
 
-struct bpf_map_def SEC("maps") allowed_sources = {
-    _uint(type, BPF_MAP_TYPE_HASH);
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 256);
     __type(key, unsigned char[ETH_ALEN]); // MAC address as key
-    __type(value, __be32); // IPv4 address as value
+    __type(value, __be32);                // IPv4 address as value
 } allowed_sources SEC("maps");
+
 
 
 // Define a map for session tracking to prevent packet injection
@@ -31,13 +32,11 @@ struct session_entry {
     __u8 protocol;
 };
 
-struct bpf_map_def SEC("maps") session_map = {
-
-
+struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 1024);
-    __type(key, struct session_entry); // Session details as key
-    __type(value, __u8); // Placeholder value
+    __type(key, struct session_entry);   // Custom session entry type
+    __type(value, __u8);                 // Placeholder value
 } session_map SEC("maps");
 
 
