@@ -181,6 +181,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to lookup host interface: %v", err)
 	}
 
+	log.Printf("Host Interface Name: %s", hostVeth)
+
 	// Look up container interface in container namespace
 	var contVeth netlink.Link
 	err = netns.Do(func(_ ns.NetNS) error {
@@ -199,45 +201,23 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to connect %q to bridge: %v", hostVeth.Attrs().Name, err)
 	}
 
+	log.Printf("Executing IPAM ExecAdd with config: %+v", args.StdinData)
+
 	r, err := ipam.ExecAdd(conf.IPAM.Type, args.StdinData)
 	if err != nil {
+		log.Printf("Failed to run IPAM ExecAdd: %v", err)
 		return fmt.Errorf("failed to run IPAM: %v", err)
 	}
+
+	log.Printf("IPAM Result raw: %+v", r)
 
 	result, err := current.NewResultFromResult(r)
 	if err != nil {
 		return fmt.Errorf("failed to parse IPAM result: %v", err)
 	}
+	log.Printf("IPAM Result after parsing: %+v", result)
 
 	// Extract container IP
-	containerIP := net.IP{}
-	log.Printf("Container Interface Name: %s", containerInterface.Name)
-
-	err = netns.Do(func(_ ns.NetNS) error {
-		link, err := netlink.LinkByName(containerInterface.Name)
-		if err != nil {
-			return err
-		}
-
-		addrList, err := netlink.AddrList(link, syscall.AF_INET)
-		if err != nil {
-			return err
-		}
-		if len(addrList) > 0 {
-			containerIP = addrList[0].IP
-		}
-		log.Printf("AddrList: %+v", addrList)
-		log.Printf("Container IP: %+s", containerIP)
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-
-	// Add container details to eBPF map
-	if err := AddContainerToMap(containerIP, containerInterface.HardwareAddr, args.IfName); err != nil {
-		return err
-	}
 
 	err = netns.Do(func(hostNS ns.NetNS) error {
 		if err := netlink.LinkSetUp(contVeth); err != nil {
@@ -250,6 +230,37 @@ func cmdAdd(args *skel.CmdArgs) error {
 			if err := netlink.AddrAdd(contVeth, addr); err != nil {
 				return fmt.Errorf("failed to add IP addr to %q: %v", contVeth.Attrs().Name, err)
 			}
+		}
+
+		containerIP := net.IP{}
+		log.Printf("Container Interface Name1: %s", containerInterface.Name)
+		log.Printf("Host Interface Name: %s", hostInterface.Name)
+
+		err = netns.Do(func(_ ns.NetNS) error {
+			link, err := netlink.LinkByName(containerInterface.Name)
+			if err != nil {
+				return err
+			}
+
+			addrList, err := netlink.AddrList(link, syscall.AF_INET)
+			if err != nil {
+				return err
+			}
+			if len(addrList) > 0 {
+				containerIP = addrList[0].IP
+			}
+			log.Printf("AddrList: %+v", addrList)
+			log.Printf("Container IP: %+s", containerIP)
+			log.Printf("Host Interface Name: %s", hostInterface.Name)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		// Add container details to eBPF map
+		if err := AddContainerToMap(containerIP, containerInterface.HardwareAddr, args.IfName); err != nil {
+			return err
 		}
 
 		// Add default route
