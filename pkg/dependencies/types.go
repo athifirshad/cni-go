@@ -5,6 +5,10 @@ import (
 	"sync"
 )
 
+const (
+    BPFMapPath = "/sys/fs/bpf/container_deps"
+)
+
 type ContainerNetwork struct {
 	ContainerID string            `json:"container_id"`
 	PodName     string            `json:"pod_name"`

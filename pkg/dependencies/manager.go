@@ -41,7 +41,7 @@ func NewManager() (*Manager, error) {
 
 	depMap, err := NewDependencyMap()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create DependencyMap: %v", err)
 	}
 
 	return &Manager{
@@ -85,7 +85,7 @@ func (m *Manager) handlePodAdd(pod *v1.Pod) {
 		Namespace:   pod.Namespace,
 		Labels:      pod.Labels,
 		IPAddress:   pod.Status.PodIP,
-		Interface:   "eth0", // Default interface name
+		Interface:   "eth0", // TODO: find actual interface name
 	}
 
 	// Add to network map
@@ -95,6 +95,9 @@ func (m *Manager) handlePodAdd(pod *v1.Pod) {
 	if err := m.updateBPFMaps(); err != nil {
 		log.Printf("Failed to update BPF maps for pod %s/%s: %v",
 			pod.Namespace, pod.Name, err)
+	} else {
+		log.Printf("Updated BPF map for pod %s/%s with policy: %v",
+			pod.Namespace, pod.Name, pod.Labels["network.policy"])
 	}
 
 	log.Printf("Added pod %s/%s to network map", pod.Namespace, pod.Name)

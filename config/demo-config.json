@@ -14,11 +14,20 @@
         "rangeEnd": "10.244.255.254",
         "gateway": "10.244.0.1",
         "routes": [
-            { "dst": "0.0.0.0/0" }
+            {
+                "dst": "0.0.0.0/0"
+            }
         ]
     },
     "dns": {
-        "nameservers": ["8.8.8.8", "8.8.4.4"],
-        "search": ["default.svc.cluster.local", "svc.cluster.local", "cluster.local"]
+        "nameservers": [
+            "8.8.8.8",
+            "8.8.4.4"
+        ],
+        "search": [
+            "default.svc.cluster.local",
+            "svc.cluster.local",
+            "cluster.local"
+        ]
     }
 }
