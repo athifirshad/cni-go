@@ -17,6 +17,7 @@ func main() {
 	}
 
 	// Create manager
+	log.Println("Starting manager...")
 	manager, err := dependencies.NewManager()
 	if err != nil {
 		log.Fatalf("Failed to create manager: %v", err)

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,14 +29,19 @@ type Manager struct {
 }
 
 func NewManager() (*Manager, error) {
+	log.Println("Starting NewManager...")
 	// Create kubernetes client
+	log.Println("Creating kubernetes client config...")
 	config, err := rest.InClusterConfig()
 	if err != nil {
+		log.Printf("Failed to create kubernetes client config: %v", err)
 		return nil, err
 	}
 
+	log.Println("Creating kubernetes client...")
 	client, err := kubernetes.NewForConfig(config)
 	if err != nil {
+		log.Printf("Failed to create kubernetes client: %v", err)
 		return nil, err
 	}
 
@@ -168,33 +174,86 @@ func (m *Manager) handleDel(req *CNIRequest) error {
 	return m.updateBPFMaps()
 }
 
+func (m *Manager) waitForPinnedMap() {
+	log.Println("Waiting for pinned map to become available...")
+	mapPath := "/sys/fs/bpf/container_deps"
+	for i := 0; i < 5; i++ {
+		if _, err := os.Stat(mapPath); err == nil {
+			log.Println("Pinned map found.")
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+	log.Printf("Warning: pinned map %s not found yet.", mapPath)
+}
+
+func (m *Manager) syncPods() {
+	log.Println("Syncing existing pods...")
+	pods, err := m.k8sClient.CoreV1().Pods("").List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		log.Printf("Failed to list pods: %v", err)
+		return
+	}
+	for _, p := range pods.Items {
+		m.handlePodAdd(&p)
+	}
+}
+
 func (m *Manager) Start() error {
-	// Start Unix socket listener
-	if err := os.MkdirAll(filepath.Dir(ManagerSocket), 0755); err != nil {
-		return err
+	log.Println("Starting manager...")
+
+	// Remove stale socket if it exists
+	if err := os.Remove(ManagerSocket); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove stale socket: %v", err)
 	}
 
+	// Create socket directory
+	if err := os.MkdirAll(filepath.Dir(ManagerSocket), 0755); err != nil {
+		return fmt.Errorf("failed to create socket directory: %v", err)
+	}
+
+	// Start Unix socket listener
 	l, err := net.Listen("unix", ManagerSocket)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create listener: %v", err)
 	}
 	m.listener = l
 
-	// Watch K8s events
-	go m.watchPods()
+	// Ensure pinned map is available before watches
+	m.waitForPinnedMap()
+
+	// Load existing pods into the BPF map before starting watches
+	m.syncPods()
+
+	// Watch K8s events in goroutine
+	go func() {
+		for {
+			m.watchPods()
+			time.Sleep(5 * time.Second) // Retry on failure
+		}
+	}()
 
 	// Handle CNI requests
 	return m.serve()
 }
 
 func (m *Manager) Cleanup() error {
+	log.Println("Cleaning up manager resources...")
+
 	if m.listener != nil {
 		m.listener.Close()
 	}
 
+	// Remove socket
+	if err := os.Remove(ManagerSocket); err != nil && !os.IsNotExist(err) {
+		log.Printf("Failed to remove socket: %v", err)
+	}
+
+	// Remove BPF map
 	if m.depMap != nil && m.depMap.Path != "" {
 		if err := os.Remove(m.depMap.Path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("failed to remove BPF map: %v", err)
+			log.Printf("Failed to remove BPF map: %v", err)
+			return err
 		}
 	}
 	return nil

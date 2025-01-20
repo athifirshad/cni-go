@@ -1,17 +1,31 @@
-.PHONY: all build clean create load-image
+# Makefile for building and deploying the CNI manager
 
-all: build
+# Image name and tag
+IMAGE_NAME := cni-manager
+IMAGE_TAG := latest
 
-build: build-plugin build-manager
+# Build the Docker image
+build:
+	sudo docker build -t $(IMAGE_NAME):$(IMAGE_TAG) .
 
-build-plugin:
-	sudo go build -o bin/demo-cni-plugin cmd/main.go
+# Deploy the CNI manager
+deploy: build
+	kubectl apply -f deploy/rbac.yaml
+	kubectl apply -f deploy/daemonset.yaml
 
-build-manager:
-	sudo go build -o bin/cni-manager cmd/manager/main.go
+revive:
+	kubectl delete -f deploy/daemonset.yaml || true
+	sudo rm -f /sys/fs/bpf/container_deps || true
+	sudo rm -f /var/run/cni/manager.sock || true
+	sleep 5
+	kubectl apply -f deploy/daemonset.yaml
+	kubectl get pods -n kube-system | grep cni-manager
 
+# Clean up
 clean:
-	rm -f bin/*
+	kubectl delete -f deploy/daemonset.yaml || true
+	sudo rm -f /sys/fs/bpf/container_deps || true
+	sudo rm -f /var/run/cni/manager.sock || true
+	docker rmi cni-manager:latest || true
 
-create:
-	sudo docker build -t cni-manager:latest .
+.PHONY: build deploy clean
