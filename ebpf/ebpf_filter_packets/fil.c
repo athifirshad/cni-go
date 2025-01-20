@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -25,18 +23,7 @@ import (
 const (
 	bridgeName = "cni0"
 	mtu        = 1500
-	mapPath    = "/sys/fs/bpf/container_map" // Path to the eBPF map
 )
-
-// ContainerInfo represents the data to store in the map.
-const ifaceNameLen = 16 // Define a fixed length for interface names
-
-// ContainerInfo represents the data to store in the map.
-type ContainerInfo struct {
-	IP        [4]byte  `binary:"fixed"`
-	MAC       [6]byte  `binary:"fixed"`
-	Interface [16]byte `binary:"fixed"`
-}
 
 func init() {
 	runtime.LockOSThread()
@@ -80,7 +67,7 @@ func setupBridge() (*netlink.Bridge, error) {
 
 func lookupContainerPolicy(containerID string) (bool, error) {
 	// Load BPF map
-	bpfMap, err := dependencies.LoadBPFMap("/sys/fs/bpf/container_map")
+	bpfMap, err := dependencies.LoadBPFMap("/sys/fs/bpf/container_deps")
 	if err != nil {
 		return false, fmt.Errorf("failed to load BPF map: %v", err)
 	}
@@ -95,45 +82,6 @@ func lookupContainerPolicy(containerID string) (bool, error) {
 	return value[0]&1 != 0, nil // Check restricted flag
 }
 
-// AddContainerToMap adds the container's IP, MAC, and interface to the eBPF map.
-func AddContainerToMap(ip net.IP, mac net.HardwareAddr, iface string) error {
-	log.Printf("IP address passed: %s", ip.String())
-	bpfMap, err := dependencies.LoadBPFMap(mapPath)
-	if err != nil {
-		return fmt.Errorf("failed to load BPF map: %v", err)
-	}
-	defer bpfMap.Close()
-
-	// Key is derived from container IP (assuming IPv4).
-	var key [4]byte
-	copy(key[:], ip.To4())
-
-	// Value contains the MAC and interface name.
-	value := ContainerInfo{}
-	fmt.Println("Size of ContainerInfo:", binary.Size(value))
-	copy(value.IP[:], ip.To4())
-	copy(value.MAC[:], mac)
-
-	// Ensure the interface name fits within the fixed-size array
-	if len(iface) > ifaceNameLen {
-		return fmt.Errorf("interface name %s is too long", iface)
-	}
-	copy(value.Interface[:], iface)
-	// Serialize the struct into binary format
-	buf := new(bytes.Buffer)
-	if err := binary.Write(buf, binary.LittleEndian, value); err != nil {
-		return fmt.Errorf("failed to serialize ContainerInfo: %v", err)
-	}
-
-	// Write to the BPF map
-	if err := bpfMap.Update(key[:], buf.Bytes(), 0); err != nil {
-		return fmt.Errorf("failed to update BPF map: %v", err)
-	}
-
-	log.Printf("Added to map: IP=%s, MAC=%s, Interface=%s\n", ip.String(), mac.String(), iface)
-	return nil
-}
-
 func cmdAdd(args *skel.CmdArgs) error {
 	// Add BPF map lookup before network setup
 	restricted, err := lookupContainerPolicy(args.ContainerID)
@@ -143,13 +91,19 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	if restricted {
 		// Apply network restrictions
-		// Additional restrictions can be implemented here
+		// ...
 	}
 
 	conf := &NetConf{}
 	if err := json.Unmarshal(args.StdinData, conf); err != nil {
 		return fmt.Errorf("failed to parse config: %v", err)
 	}
+
+	// Get container network details
+	// containerInfo := &dependencies.ContainerNetwork{
+	// 	ContainerID: args.ContainerID,
+	// 	Interface:   args.IfName,
+	// }
 
 	br, err := setupBridge()
 	if err != nil {
@@ -181,8 +135,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to lookup host interface: %v", err)
 	}
 
-	log.Printf("Host Interface Name: %s", hostVeth)
-
 	// Look up container interface in container namespace
 	var contVeth netlink.Link
 	err = netns.Do(func(_ ns.NetNS) error {
@@ -201,23 +153,15 @@ func cmdAdd(args *skel.CmdArgs) error {
 		return fmt.Errorf("failed to connect %q to bridge: %v", hostVeth.Attrs().Name, err)
 	}
 
-	log.Printf("Executing IPAM ExecAdd with config: %+v", args.StdinData)
-
 	r, err := ipam.ExecAdd(conf.IPAM.Type, args.StdinData)
 	if err != nil {
-		log.Printf("Failed to run IPAM ExecAdd: %v", err)
 		return fmt.Errorf("failed to run IPAM: %v", err)
 	}
-
-	log.Printf("IPAM Result raw: %+v", r)
 
 	result, err := current.NewResultFromResult(r)
 	if err != nil {
 		return fmt.Errorf("failed to parse IPAM result: %v", err)
 	}
-	log.Printf("IPAM Result after parsing: %+v", result)
-
-	// Extract container IP
 
 	err = netns.Do(func(hostNS ns.NetNS) error {
 		if err := netlink.LinkSetUp(contVeth); err != nil {
@@ -230,37 +174,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 			if err := netlink.AddrAdd(contVeth, addr); err != nil {
 				return fmt.Errorf("failed to add IP addr to %q: %v", contVeth.Attrs().Name, err)
 			}
-		}
-
-		containerIP := net.IP{}
-		log.Printf("Container Interface Name1: %s", containerInterface.Name)
-		log.Printf("Host Interface Name: %s", hostInterface.Name)
-
-		err = netns.Do(func(_ ns.NetNS) error {
-			link, err := netlink.LinkByName(containerInterface.Name)
-			if err != nil {
-				return err
-			}
-
-			addrList, err := netlink.AddrList(link, syscall.AF_INET)
-			if err != nil {
-				return err
-			}
-			if len(addrList) > 0 {
-				containerIP = addrList[0].IP
-			}
-			log.Printf("AddrList: %+v", addrList)
-			log.Printf("Container IP: %+s", containerIP)
-			log.Printf("Host Interface Name: %s", hostInterface.Name)
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-
-		// Add container details to eBPF map
-		if err := AddContainerToMap(containerIP, containerInterface.HardwareAddr, args.IfName); err != nil {
-			return err
 		}
 
 		// Add default route
@@ -284,7 +197,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	result.Interfaces = []*current.Interface{{
 		Name:    args.IfName,
-		Mac:     containerInterface.HardwareAddr.String(),
+		Mac:     contVeth.Attrs().HardwareAddr.String(),
 		Sandbox: netns.Path(),
 	}}
 
