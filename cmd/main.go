@@ -17,6 +17,7 @@ import (
 	"github.com/containernetworking/plugins/pkg/ipam"
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/vishvananda/netlink"
+	"github.com/athifirshad/go-cni/pkg/logging"
 )
 
 const (
@@ -32,6 +33,8 @@ type NetConf struct {
 	types.NetConf
 	MTU int `json:"mtu"`
 }
+
+var logger = logging.NewLogger("cni-plugin")
 
 func setupBridge() (*netlink.Bridge, error) {
 	br := &netlink.Bridge{
@@ -65,6 +68,9 @@ func setupBridge() (*netlink.Bridge, error) {
 }
 
 func cmdAdd(args *skel.CmdArgs) error {
+	logger.Info("ADD called for container %s", args.ContainerID)
+	logger.Debug("ADD args: %+v", args)
+
 	conf := &NetConf{}
 	if err := json.Unmarshal(args.StdinData, conf); err != nil {
 		return fmt.Errorf("failed to parse config: %v", err)
@@ -166,10 +172,14 @@ func cmdAdd(args *skel.CmdArgs) error {
 		Sandbox: netns.Path(),
 	}}
 
+	logger.Info("Successfully configured network for container %s", args.ContainerID)
 	return types.PrintResult(result, conf.CNIVersion)
 }
 
 func cmdDel(args *skel.CmdArgs) error {
+	logger.Info("DEL called for container %s", args.ContainerID)
+	logger.Debug("DEL args: %+v", args)
+
 	conf := &NetConf{}
 	if err := json.Unmarshal(args.StdinData, conf); err != nil {
 		return fmt.Errorf("failed to parse config: %v", err)
@@ -203,6 +213,7 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 	}
 
+	logger.Info("Successfully cleaned up network for container %s", args.ContainerID)
 	return nil
 }
 
@@ -219,6 +230,7 @@ func main() {
 	// Setup logging
 	log.SetOutput(os.Stderr)
 
+	logger.Info("CNI plugin version %s starting", version.All)
 	// Start the plugin
 	skel.PluginMainFuncs(
 		skel.CNIFuncs{

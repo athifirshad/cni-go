@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cni-daemon
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cni-daemon
+rules:
+- apiGroups: [""]
+  resources:
+    - pods
+    - nodes
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources:
+    - networkpolicies
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cni-daemon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cni-daemon
+subjects:
+- kind: ServiceAccount
+  name: cni-daemon
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cni-daemon
+  namespace: kube-system
+  labels:
+    k8s-app: cni-daemon
+spec:
+  selector:
+    matchLabels:
+      k8s-app: cni-daemon
+  template:
+    metadata:
+      labels:
+        k8s-app: cni-daemon
+    spec:
+      serviceAccount: cni-daemon
+      hostNetwork: true
+      hostPID: true
+      priorityClassName: system-node-critical
+      containers:
+      - name: cni-daemon
+        image: localhost:5000/cni-daemon:latest
+        imagePullPolicy: Always
+        securityContext:
+          privileged: true
+          capabilities:
+            add: ["NET_ADMIN", "NET_RAW"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: cni
+          mountPath: /opt/cni/bin
+        - name: cni-net-dir
+          mountPath: /etc/cni/net.d
+        - name: run
+          mountPath: /var/run
+        - name: lib-modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: cni-socket-dir
+          mountPath: /var/run/cni
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - test -e /var/run/cni/daemon.sock  # Update socket path
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - test -e /var/run/cni/daemon.sock  # Update socket path
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          limits:
+            cpu: "1"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+      - name: cni-manager
+        image: localhost:5000/cni-daemon:latest
+        command: ["/usr/local/bin/cni-manager"]
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        volumeMounts:
+        - name: run
+          mountPath: /var/run
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: cni
+        hostPath:
+          path: /opt/cni/bin
+      - name: cni-net-dir
+        hostPath:
+          path: /etc/cni/net.d
+      - name: run
+        hostPath:
+          path: /var/run
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: cni-socket-dir
+        hostPath:
+          path: /var/run/cni
+          type: DirectoryOrCreate
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
