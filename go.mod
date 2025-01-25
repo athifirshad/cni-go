@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.23.2
 
 require (
+	github.com/cilium/ebpf v0.12.3
 	github.com/containernetworking/cni v1.2.3
 	github.com/containernetworking/plugins v1.6.0
 	github.com/vishvananda/netlink v1.3.0
@@ -36,9 +37,9 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/safchain/ethtool v0.4.1 // indirect
-	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/vishvananda/netns v0.0.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	golang.org/x/exp v0.0.0-20230224173230-c95f2b4c22f2 // indirect
 	golang.org/x/net v0.30.0 // indirect
 	golang.org/x/oauth2 v0.23.0 // indirect
 	golang.org/x/sys v0.26.0 // indirect

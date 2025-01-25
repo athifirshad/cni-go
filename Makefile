@@ -59,4 +59,28 @@ clean-managers:
 # Clean everything including pods
 clean-all: clean docker-clean clean-managers
 
-.PHONY: build clean manager-logs daemon-logs daemon-logs-one events redeploy get-ids count-managers docker-clean clean-all clean-managers
+# Restart Kubernetes
+kube-restart:
+	sudo systemctl restart kubelet
+	sudo systemctl restart containerd
+	sleep 30
+	kubectl get nodes
+
+# Complete system cleanup
+nuke:
+	# Delete all pods in kube-system namespace
+	kubectl delete pods --all -n kube-system --force --grace-period=0
+	# # Delete evicted pods
+	# kubectl get pods -A | grep Evicted | awk '{print $$2}' | xargs kubectl delete pod -n kube-system
+	# Clear logs
+	sudo journalctl --vacuum-time=1s
+
+	# Remove CNI state
+	sudo rm -rf /var/run/cni/
+	sudo rm -rf /var/log/containers/*
+	sudo rm -rf /var/log/pods/*
+	
+	# Restart kubelet to ensure clean state
+	sudo systemctl restart kubelet
+
+.PHONY: build clean manager-logs daemon-logs daemon-logs-one events redeploy get-ids count-managers docker-clean clean-all clean-managers kube-restart nuke

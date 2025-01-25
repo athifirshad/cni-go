@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
+	"sync"
+
+	"github.com/athifirshad/go-cni/pkg/bpf"
 	"github.com/athifirshad/go-cni/pkg/logging"
-	"github.com/athifirshad/go-cni/pkg/store"
+	"github.com/athifirshad/go-cni/pkg/version"
 	v1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,11 +20,26 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+const STATE_FILE = "/var/run/cni/network-state.json"
+
 var logger = logging.NewLogger("manager")
 
 type NetworkManager struct {
 	client *kubernetes.Clientset
-	store  *store.NetworkStore
+}
+
+type NetworkState struct {
+	Pods       map[string]*v1.Pod
+	Policies   map[string]*networkingv1.NetworkPolicy
+	Containers map[string]*bpf.ContainerInfo
+	mu         sync.RWMutex
+}
+
+func init() {
+	if err := bpf.InitMaps(); err != nil {
+		logger.Error("Failed to initialize BPF maps: %v", err)
+		os.Exit(1)
+	}
 }
 
 func newNetworkManager() (*NetworkManager, error) {
@@ -41,7 +60,6 @@ func newNetworkManager() (*NetworkManager, error) {
 	logger.Info("Successfully initialized Kubernetes client")
 	return &NetworkManager{
 		client: clientset,
-		store:  store.DefaultStore,
 	}, nil
 }
 
@@ -84,8 +102,25 @@ func (m *NetworkManager) watchWithRetry(ctx context.Context, watch func(context.
 	}
 }
 
+func (m *NetworkManager) saveState(state *NetworkState) error {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(STATE_FILE, data, 0644) // Changed from ioutil.WriteFile
+}
+
 func (m *NetworkManager) watchPods(ctx context.Context) error {
 	logger.Info("Starting pod watcher")
+
+	state := &NetworkState{
+		Pods:       make(map[string]*v1.Pod),
+		Policies:   make(map[string]*networkingv1.NetworkPolicy),
+		Containers: make(map[string]*bpf.ContainerInfo),
+	}
 
 	watcher, err := m.client.CoreV1().Pods("").Watch(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -100,14 +135,32 @@ func (m *NetworkManager) watchPods(ctx context.Context) error {
 
 		switch event.Type {
 		case watch.Added:
-			logger.Info("Pod added to store: %s/%s", pod.Namespace, pod.Name)
-			m.store.AddPod(pod)
+			logger.Info("Pod added: %s/%s", pod.Namespace, pod.Name)
+			state.mu.Lock()
+			state.Pods[pod.Namespace+"/"+pod.Name] = pod
+			state.mu.Unlock()
+			m.saveState(state)
+			info := bpf.ContainerInfo{
+				PodName:   pod.Name,
+				Namespace: pod.Namespace,
+			}
+			if err := bpf.PutContainer(string(pod.UID), info); err != nil {
+				logger.Error("Failed to add pod to BPF map: %v", err)
+			}
 		case watch.Modified:
-			logger.Info("Pod updated in store: %s/%s", pod.Namespace, pod.Name)
-			m.store.AddPod(pod) // Updates existing entry
+			// Update BPF map
+			info := bpf.ContainerInfo{
+				PodName:   pod.Name,
+				Namespace: pod.Namespace,
+			}
+			if err := bpf.PutContainer(string(pod.UID), info); err != nil {
+				logger.Error("Failed to update pod in BPF map: %v", err)
+			}
 		case watch.Deleted:
-			logger.Info("Pod removed from store: %s/%s", pod.Namespace, pod.Name)
-			m.store.DeletePod(pod.Namespace, pod.Name)
+			logger.Info("Pod deleted: %s/%s", pod.Namespace, pod.Name)
+			if err := bpf.ContainerMap.Delete([]byte(string(pod.UID))); err != nil {
+				logger.Error("Failed to delete pod from BPF map: %v", err)
+			}
 		}
 	}
 	return nil
@@ -131,11 +184,11 @@ func (m *NetworkManager) watchNetworkPolicies(ctx context.Context) error {
 		case watch.Added, watch.Modified:
 			logger.Info("Network policy updated: %s/%s", policy.Namespace, policy.Name)
 			// Update store with new policy
-			m.store.UpdatePolicy(policy)
+			// m.store.UpdatePolicy(policy)
 		case watch.Deleted:
 			logger.Info("Network policy deleted: %s/%s", policy.Namespace, policy.Name)
 			// Remove network policy from store
-			m.store.DeletePolicy(policy.Namespace, policy.Name)
+			// m.store.DeletePolicy(policy.Namespace, policy.Name)
 		}
 	}
 	return nil
@@ -167,15 +220,15 @@ func (m *NetworkManager) reconcileNetworks(ctx context.Context) {
 			}
 
 			// Reconcile store with current state
-			m.store.Reconcile(pods, policies)
-			logger.Info("Store reconciled with %d pods and %d policies", 
-                len(pods.Items), len(policies.Items))
+			// m.store.Reconcile(pods, policies)
+			logger.Info("Store reconciled with %d pods and %d policies",
+				len(pods.Items), len(policies.Items))
 		}
 	}
 }
 
 func main() {
-	logger.Info("Starting CNI manager")
+	logger.Info("Starting CNI manager version %s", version.GetVersion())
 
 	manager, err := newNetworkManager()
 	if err != nil {

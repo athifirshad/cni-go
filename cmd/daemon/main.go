@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"sync"
 	"time"
 
+	"github.com/athifirshad/go-cni/pkg/bpf"
 	"github.com/athifirshad/go-cni/pkg/logging"
 	"github.com/athifirshad/go-cni/pkg/store"
 	"github.com/athifirshad/go-cni/pkg/types"
+	"github.com/athifirshad/go-cni/pkg/version"
+	v1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1" // <-- add missing import
 )
 
 var (
@@ -16,23 +21,40 @@ var (
 	networkStore = store.DefaultStore
 )
 
-const sockPath = "/var/run/cni/daemon.sock" // Updated to match manager path
+const (
+	sockPath   = "/var/run/cni/daemon.sock" // Updated to match manager path
+	STATE_FILE = "/var/run/cni/network-state.json"
+)
+
+// Add NetworkState type definition
+type NetworkState struct {
+	Pods       map[string]*v1.Pod
+	Policies   map[string]*networkingv1.NetworkPolicy
+	Containers map[string]*store.ContainerInfo
+	mu         sync.RWMutex
+}
 
 func main() {
-	logger.Info("Starting CNI daemon")
-	// Start periodic store state printer
+	logger.Info("Starting CNI daemon version %s", version.GetVersion())
+	if err := bpf.InitMaps(); err != nil {
+		logger.Error("Failed to initialize BPF maps: %v", err)
+		os.Exit(1)
+	}
+
+	// Start background tasks
+	go printBPFState()
 	go printStoreState()
-	// Create directory if it doesn't exist
+	go watchStateFile()
+
+	// Setup socket
 	if err := os.MkdirAll("/var/run/cni", 0755); err != nil {
 		logger.Error("Failed to create socket directory: %v", err)
 		os.Exit(1)
 	}
-	// Give socket directory proper permissions
 	if err := os.Chmod("/var/run/cni", 0755); err != nil {
 		logger.Error("Failed to set socket directory permissions: %v", err)
 		os.Exit(1)
 	}
-	// Remove existing socket
 	if err := os.RemoveAll(sockPath); err != nil {
 		logger.Warn("Could not remove existing socket: %v", err)
 	}
@@ -41,23 +63,48 @@ func main() {
 		logger.Error("Failed to listen on socket: %v", err)
 		os.Exit(1)
 	}
-	defer listener.Close()
 	logger.Info("CNI daemon listening on %s", sockPath)
 	logger.Info("Node ID: %s", os.Getenv("NODE_NAME"))
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			logger.Warn("Failed to accept connection: %v", err)
-			continue
+
+	// Accept connections in separate goroutine
+	go func() {
+		defer listener.Close()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				logger.Warn("Failed to accept connection: %v", err)
+				continue
+			}
+			go handleConnection(conn)
 		}
-		go handleConnection(conn)
-	}
+	}()
+
+	// Keep main alive
+	select {}
 }
 
 func printStoreState() {
 	ticker := time.NewTicker(10 * time.Second)
 	for range ticker.C {
 		logger.Info("Current Network State:%s", networkStore.String())
+	}
+}
+
+func printBPFState() {
+	ticker := time.NewTicker(10 * time.Second)
+	for range ticker.C {
+		logger.Info("Current BPF Map State:")
+
+		// Print containers
+		iter := bpf.ContainerMap.Iterate()
+		var (
+			key   []byte
+			value bpf.ContainerInfo
+		)
+		for iter.Next(&key, &value) {
+			logger.Info("Container: %s, Pod: %s/%s, NetNS: %d",
+				string(key), value.Namespace, value.PodName, value.NetNS)
+		}
 	}
 }
 
@@ -90,8 +137,8 @@ func handleConnection(conn net.Conn) {
 		} else {
 			// Add container to store
 			networkStore.AddContainer(&store.ContainerInfo{
-				ID:    cniReq.ContainerID,
-				NetNS: cniReq.Netns,
+				ID:     cniReq.ContainerID,
+				NetNS:  cniReq.Netns,
 				IfName: cniReq.IfName,
 			})
 			resp = types.CNIResponse{Success: true}
@@ -147,5 +194,29 @@ func handleConnection(conn net.Conn) {
 	// Send response with error handling
 	if err := json.NewEncoder(conn).Encode(resp); err != nil {
 		logger.Error("Failed to send response: %v", err)
+	}
+}
+
+func watchStateFile() {
+	ticker := time.NewTicker(5 * time.Second)
+	for range ticker.C {
+		data, err := os.ReadFile(STATE_FILE) // Changed from ioutil.ReadFile
+		if err != nil {
+			logger.Error("Failed to read state: %v", err)
+			continue
+		}
+
+		var state NetworkState
+		if err := json.Unmarshal(data, &state); err != nil {
+			logger.Error("Failed to parse state: %v", err)
+			continue
+		}
+
+		logger.Info("Current Network State:")
+		state.mu.RLock()
+		for k, pod := range state.Pods {
+			logger.Info("Pod: %s Phase: %s", k, pod.Status.Phase)
+		}
+		state.mu.RUnlock()
 	}
 }

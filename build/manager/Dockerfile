@@ -4,7 +4,9 @@ WORKDIR /build
 COPY . .
 
 # Build manager only
-RUN CGO_ENABLED=0 GOOS=linux go build -o /manager ./cmd/manager/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags "-X github.com/athifirshad/go-cni/pkg/version.GitCommit=$(git rev-parse HEAD)" \
+    -o /manager ./cmd/manager/main.go
 
 FROM alpine:3.18
 
