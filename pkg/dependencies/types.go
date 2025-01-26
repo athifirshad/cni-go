@@ -1,4 +1,3 @@
-// pkg/dependencies/types.go
 package dependencies
 
 import (
@@ -6,7 +5,7 @@ import (
 )
 
 const (
-    BPFMapPath = "/sys/fs/bpf/container_deps"
+	BPFMapPath = "/sys/fs/bpf/container_deps"
 )
 
 type ContainerNetwork struct {

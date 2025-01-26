@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/athifirshad/go-cni/pkg/dependencies"
+	"cni-go/pkg/dependencies"
 )
 
 func main() {

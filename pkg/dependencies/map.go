@@ -1,4 +1,3 @@
-// pkg/dependencies/map.go
 package dependencies
 
 import (
