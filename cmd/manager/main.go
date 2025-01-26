@@ -112,6 +112,27 @@ func printBPFMapContents(bpfMap *ebpf.Map) {
 	fmt.Printf("\nBPF Map Contents:\n%s\n", string(jsonBytes))
 }
 
+// Add helper function to update networkMap
+func updateNetworkMap(pod *corev1.Pod, networkMap map[string]map[string]string, remove bool) {
+	if pod.Namespace == "kube-system" {
+		return
+	}
+
+	if remove {
+		delete(networkMap, pod.Name)
+		return
+	}
+
+	if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
+		if _, ok := networkMap[pod.Name]; !ok {
+			networkMap[pod.Name] = make(map[string]string)
+		}
+		for _, container := range pod.Spec.Containers {
+			networkMap[pod.Name][container.Name] = pod.Status.PodIP
+		}
+	}
+}
+
 func main() {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatalf("rlimit.RemoveMemlock() failed: %v", err)
@@ -277,29 +298,12 @@ func main() {
 			continue
 		}
 
+		log.Printf("Pod %s: %s, IP: %s", event.Type, pod.Name, pod.Status.PodIP)
+
 		switch event.Type {
-		case "ADDED":
+		case "ADDED", "MODIFIED":
 			if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" && pod.Namespace != "kube-system" {
-				// Only add to BPF map if it's in our networkMap
-				if _, exists := networkMap[pod.Name]; exists {
-					log.Printf("Adding user pod to BPF map: %s, IP: %s", pod.Name, pod.Status.PodIP)
-					for _, container := range pod.Spec.Containers {
-						for _, port := range container.Ports {
-							if err := updateBPFMapEntry(dependencyBPFMap, pod.Status.PodIP, uint16(port.ContainerPort), "0.0.0.0", 0); err != nil {
-								log.Printf("Failed to update BPF map: %v", err)
-								continue
-							}
-							log.Printf("Added container port to BPF map - Pod: %s, Container: %s, IP: %s, Port: %d",  // Changed %s to %d
-								pod.Name, container.Name, pod.Status.PodIP, port.ContainerPort)
-						}
-					}
-					printBPFMapContents(dependencyBPFMap)
-				}
-			}
-		case "MODIFIED":
-			log.Printf("Pod modified: %s, IP: %s", pod.Name, pod.Status.PodIP)
-			if pod.Status.Phase == corev1.PodRunning && pod.Status.PodIP != "" {
-				// Clear old entries for this IP
+				// Clear existing entries for this IP first
 				lookup := &MapKey{}
 				var value MapValue
 				entries := dependencyBPFMap.Iterate()
@@ -307,7 +311,9 @@ func main() {
 					ipBytes := make([]byte, 4)
 					binary.BigEndian.PutUint32(ipBytes, lookup.SrcIP)
 					if net.IP(ipBytes).String() == pod.Status.PodIP {
-						dependencyBPFMap.Delete(lookup)
+						if err := dependencyBPFMap.Delete(lookup); err != nil {
+							log.Printf("Failed to delete old entry from BPF map: %v", err)
+						}
 					}
 				}
 
@@ -318,19 +324,54 @@ func main() {
 							log.Printf("Failed to update BPF map for modified pod: %v", err)
 						}
 					}
-					printBPFMapContents(dependencyBPFMap)
 				}
+				printBPFMapContents(dependencyBPFMap)
 			}
+
 		case "DELETED":
-			log.Printf("Pod deleted: %s", pod.Name)
-			// When a pod is deleted, remove its entry from dependencyMap
-			for i, entry := range dependencyMap {
-				if entry["source"] == fmt.Sprintf("%s:any", pod.Status.PodIP) {
-					dependencyMap = append(dependencyMap[:i], dependencyMap[i+1:]...)
-					break
+			log.Printf("Pod DELETED: %s, IP: %s", pod.Name, pod.Status.PodIP)
+			
+			// Remove from networkMap
+			updateNetworkMap(pod, networkMap, true)
+
+			// Get all IPs associated with this pod from networkMap
+			var podIPs []string
+			if podContainers, exists := networkMap[pod.Name]; exists {
+				for _, ip := range podContainers {
+					podIPs = append(podIPs, ip)
 				}
 			}
+			// Also add the pod's last known IP if available
+			if pod.Status.PodIP != "" {
+				podIPs = append(podIPs, pod.Status.PodIP)
+			}
+
+			// Remove all entries for this pod's IPs from BPF map
+			for _, podIP := range podIPs {
+				// Convert IP to uint32 for comparison
+				podIPInt, err := ipToUint32(podIP)
+				if err != nil {
+					log.Printf("Failed to convert IP %s: %v", podIP, err)
+					continue
+				}
+
+				// Iterate through BPF map and delete matching entries
+				var key MapKey
+				var value MapValue
+				iter := dependencyBPFMap.Iterate()
+				for iter.Next(&key, &value) {
+					if key.SrcIP == podIPInt {
+						if err := dependencyBPFMap.Delete(&key); err != nil {
+							log.Printf("Failed to delete entry from BPF map for IP %s: %v", podIP, err)
+						} else {
+							log.Printf("Successfully removed entry from BPF map for IP %s", podIP)
+						}
+					}
+				}
+			}
+			
 			printBPFMapContents(dependencyBPFMap)
+
 		case "ERROR":
 			log.Printf("Error watching pods: %v", event.Object)
 		}

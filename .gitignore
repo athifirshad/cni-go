@@ -3,3 +3,5 @@ bin
 felix
 calico
 *.tgz
+xdp-dump
+xdp-filter

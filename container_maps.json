@@ -1,1 +1,32 @@
-{"dependencyMap":[{"destination":"any:any","source":"10.244.0.19:8080"},{"destination":"any:any","source":"10.244.0.19:8081"},{"destination":"any:any","source":"10.244.0.20:8080"},{"destination":"any:any","source":"10.244.0.21:20"}],"networkMap":{"test-pod":{"test-container":"10.244.0.19","test-container2":"10.244.0.19"},"test-pod2":{"test-container2":"10.244.0.20"},"test-pod3":{"test-container3":"10.244.0.21"}}}
+{
+    "dependencyMap": [
+        {
+            "destination": "any:any",
+            "source": "10.244.0.31:8080"
+        },
+        {
+            "destination": "any:any",
+            "source": "10.244.0.31:8081"
+        },
+        {
+            "destination": "any:any",
+            "source": "10.244.0.30:8080"
+        },
+        {
+            "destination": "any:any",
+            "source": "10.244.0.32:20"
+        }
+    ],
+    "networkMap": {
+        "test-pod": {
+            "test-container": "10.244.0.31",
+            "test-container2": "10.244.0.31"
+        },
+        "test-pod2": {
+            "test-container2": "10.244.0.30"
+        },
+        "test-pod3": {
+            "test-container3": "10.244.0.32"
+        }
+    }
+}
